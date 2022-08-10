@@ -1,10 +1,12 @@
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from mysql.connector import connect
 
 import json
 import asyncio
+
+from typing import List
 
 app = FastAPI()
 
@@ -18,11 +20,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-    
-# Query
-query = ("SELECT id, code FROM test "
-         "WHERE id > %s "
-         "ORDER BY id")
+
+# WebSocket manager class
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def send_personal_message(self, message: str, websocket: WebSocket):
+        await websocket.send_text(message)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            await connection.send_text(message)
+            
+manager = ConnectionManager()
 
 # Home
 @app.get('/')
@@ -32,17 +50,17 @@ def home():
  
 @app.websocket('/ws/poly')
 async def polydesignWS(websocket: WebSocket):
-    await websocket.accept()
+    await manager.connect(websocket)
     await websocket.receive_text()
     
     while True:
         try:
             result = traitement()
             if result != '[]':
-                await websocket.send_json(result)
+                await manager.broadcast(json.dumps(result))
             
-        except Exception as e:
-            print('error:', e)
+        except WebSocketDisconnect:
+            manager.disconnect(websocket)
             break
         await asyncio.sleep(3)   
   
@@ -60,6 +78,11 @@ def traitement():
     # Get last saved id
     f = open ('./app/data/last_id.txt', 'r')
     id = int(f.read())
+    
+    # Query
+    query = ("SELECT id, code FROM test "
+            "WHERE id > %s "
+            "ORDER BY id")
     
     # Execute query
     cursor.execute(query, [id])
